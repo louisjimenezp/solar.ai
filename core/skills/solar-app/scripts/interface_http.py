@@ -8,6 +8,9 @@ import re
 import subprocess
 import sys
 import uuid
+import threading
+import time
+from managed_process import terminate_group
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from typing import Callable
@@ -424,10 +427,28 @@ class InterfaceHttpDispatcher:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,
         )
+        store.set_run_pid(run_id, proc.pid)
+        store.update_thread_last_run(thread_id, run_id)
         proc.stdin.write(json.dumps(payload, ensure_ascii=False))  # type: ignore[union-attr]
         proc.stdin.close()  # type: ignore[union-attr]
 
+        monitor_stop = threading.Event()
+        interrupted = []
+        def monitor():
+            deadline = time.monotonic() + int(store.env.get("SOLAR_ROUTER_TIMEOUT_SEC", "300"))
+            while not monitor_stop.wait(0.1):
+                cancel = bool((store.get_run(run_id) or {}).get("cancellation_requested"))
+                if cancel or time.monotonic() >= deadline:
+                    terminate_group(proc)
+                    interrupted.append("cancelled" if cancel else "timeout")
+                    return
+        watcher = threading.Thread(target=monitor, daemon=True)
+        watcher.start()
+        # Drain stderr independently so provider diagnostics cannot deadlock stdout.
+        stderr_reader = threading.Thread(target=proc.stderr.read, daemon=True)
+        stderr_reader.start()
         full_text_parts: list[str] = []
         provider_used: str | None = None
         usage: dict | None = None
@@ -481,13 +502,13 @@ class InterfaceHttpDispatcher:
             status = "failed"
             error = "client disconnected"
             if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=2)
+                terminate_group(proc)
 
+        monitor_stop.set()
+        watcher.join(timeout=6)
+        if interrupted:
+            status = "cancelled" if interrupted[0] == "cancelled" else "failed"
+            error = None if status == "cancelled" else "Router timed out"
         reply_text = strip_solar_tags("".join(full_text_parts))
         ended_at = now_iso()
         run_dir = store.runs_dir / run_id
@@ -527,9 +548,9 @@ class InterfaceHttpDispatcher:
             conn.commit()
         finally:
             conn.close()
-        store.update_thread_last_run(thread_id, run_id)
+        store.finish_thread_run(thread_id, run_id, status)
 
-        event_type = "run.completed" if status == "succeeded" else "run.failed"
+        event_type = "run.completed" if status == "succeeded" else ("run.cancelled" if status == "cancelled" else "run.failed")
         self._emit(
             event_type,
             {

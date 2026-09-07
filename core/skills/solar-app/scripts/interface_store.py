@@ -11,12 +11,26 @@ import shutil
 import sqlite3
 import subprocess
 import uuid
+import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "solar-router/scripts"))
+from managed_process import run_managed, ProcessCancelled
 
 EventHook = Callable[[str, dict], None]
 
 MIGRATION_SOURCE = Path(__file__).resolve().parent.parent / "references" / "001_initial.sql"
+
+
+class ClosingConnection(sqlite3.Connection):
+    """Commit/rollback and release the connection after each store context."""
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
 
 
 def now_iso() -> str:
@@ -72,6 +86,7 @@ class InterfaceStore:
         self.router_script = self._resolve_under_home("core/skills/solar-router/scripts/run_router.py")
         self.context_turns = int(self.env.get("SOLAR_ROUTER_CONTEXT_TURNS", "12"))
         self._event_hook: EventHook | None = None
+        self.voice_lock = threading.RLock()
 
     def set_event_hook(self, hook: EventHook | None) -> None:
         self._event_hook = hook
@@ -104,11 +119,12 @@ class InterfaceStore:
     def ensure_runtime(self) -> None:
         for path in (self.db_dir, self.migrations_dir, self.state_dir, self.threads_dir, self.runs_dir):
             path.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(MIGRATION_SOURCE, self.migrations_dir / "001_initial.sql")
+        for migration in MIGRATION_SOURCE.parent.glob("[0-9][0-9][0-9]_*.sql"):
+            shutil.copyfile(migration, self.migrations_dir / migration.name)
         self._apply_migrations()
 
     def connect_db(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, factory=ClosingConnection)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -122,12 +138,17 @@ class InterfaceStore:
                 current = 0
             else:
                 current = int(row["version"])
+            conn.commit()
             for migration in sorted(self.migrations_dir.glob("[0-9][0-9][0-9]_*.sql")):
                 version = int(migration.name.split("_", 1)[0])
                 if version <= current:
                     continue
-                conn.executescript(migration.read_text(encoding="utf-8"))
-                conn.execute("UPDATE schema_version SET version = ?", (version,))
+                try:
+                    conn.executescript("BEGIN IMMEDIATE;\n" + migration.read_text(encoding="utf-8")
+                                       + f"\nUPDATE schema_version SET version = {version};\nCOMMIT;")
+                except Exception:
+                    conn.rollback()
+                    raise
                 current = version
             conn.commit()
         finally:
@@ -356,14 +377,16 @@ class InterfaceStore:
         conn = self.connect_db()
         try:
             conn.execute(
-                "UPDATE threads SET last_run_id = ?, updated_at = ? WHERE thread_id = ?",
-                (run_id, now_iso(), thread_id),
+                "UPDATE threads SET last_run_id = ?, active_run_id = ?, state = 'running', updated_at = ? WHERE thread_id = ?",
+                (run_id, run_id, now_iso(), thread_id),
             )
             conn.commit()
         finally:
             conn.close()
 
     def is_run_stale(self, run: sqlite3.Row | dict) -> bool:
+        if "task_id" in run.keys() and run["task_id"]:
+            return False  # Async lifecycle, not an age heuristic, owns this run.
         status = str(run["status"])
         if status not in {"running", "queued"}:
             return False
@@ -398,9 +421,9 @@ class InterfaceStore:
 
             candidate_active_runs = conn.execute(
                 """
-                SELECT run_id, status, pid, started_at
+                SELECT run_id, status, pid, started_at, task_id
                 FROM runs
-                WHERE thread_id = ? AND status NOT IN ('success', 'succeeded', 'failed', 'rejected')
+                WHERE thread_id = ? AND status NOT IN ('success', 'succeeded', 'failed', 'rejected', 'cancelled')
                 ORDER BY started_at DESC
                 """,
                 (thread_id,),
@@ -526,13 +549,19 @@ class InterfaceStore:
             "metadata": {"agent": None, "skills": [], "planet": None},
         }
 
-        proc = subprocess.run(
-            ["python3", str(self.router_script)],
-            cwd=str(self.workspace),
-            input=json.dumps(payload, ensure_ascii=False),
-            text=True,
-            capture_output=True,
-        )
+        self.update_thread_last_run(thread_id, run_id)
+        try:
+            proc = run_managed(
+                [sys.executable, str(self.router_script)], cwd=str(self.workspace),
+                input=json.dumps(payload, ensure_ascii=False),
+                timeout=int(self.env.get("SOLAR_ROUTER_TIMEOUT_SEC", "300")),
+                cancelled=lambda: bool((self.get_run(run_id) or {}).get("cancellation_requested")),
+                on_start=lambda pid: self.set_run_pid(run_id, pid),
+            )
+        except ProcessCancelled:
+            proc = subprocess.CompletedProcess([], 130, json.dumps({"status": "cancelled"}), "")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            proc = subprocess.CompletedProcess([], 1, json.dumps({"status": "failed", "error": str(exc)}), "")
 
         ended_at = now_iso()
         response: dict
@@ -541,7 +570,7 @@ class InterfaceStore:
         except json.JSONDecodeError:
             response = {"status": "failed", "error": proc.stderr.strip() or "Invalid router output"}
 
-        status = "succeeded" if response.get("status") == "success" else "failed"
+        status = "succeeded" if response.get("status") == "success" else ("cancelled" if response.get("status") == "cancelled" else "failed")
         reply_text = response.get("reply_text", "")
         provider_used = response.get("provider_used")
         summary = reply_text[:200] if reply_text else None
@@ -603,6 +632,31 @@ class InterfaceStore:
         finally:
             conn.close()
 
-        self.update_thread_last_run(thread_id, run_id)
+        self.finish_thread_run(thread_id, run_id, status)
         run_record = self.get_row("SELECT * FROM runs WHERE run_id = ?", (run_id,)) or {}
         return run_record, response
+
+    def set_run_pid(self, run_id, pid):
+        with self.connect_db() as conn:
+            conn.execute("UPDATE runs SET pid=? WHERE run_id=?", (pid, run_id))
+
+    def finish_thread_run(self, thread_id, run_id, status):
+        state = {"succeeded": "done", "success": "done"}.get(status, status)
+        with self.connect_db() as conn:
+            conn.execute("UPDATE runs SET pid=NULL WHERE run_id=?", (run_id,))
+            conn.execute("UPDATE threads SET state=?, updated_at=? WHERE thread_id=? AND active_run_id=?",
+                         (state, now_iso(), thread_id, run_id))
+
+    def request_run_cancel(self, run_id):
+        with self.connect_db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            run = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            if run is None:
+                raise KeyError(run_id)
+            if run["status"] not in ("running", "queued", "active"):
+                return {"run_id": run_id, "status": run["status"]}
+            conn.execute("UPDATE runs SET cancellation_requested=1 WHERE run_id=?", (run_id,))
+        if run["task_id"]:
+            from voice_work import task_root, cancel_task
+            cancel_task(task_root(self), run["task_id"])
+        return {"run_id": run_id, "status": "cancellation_requested"}

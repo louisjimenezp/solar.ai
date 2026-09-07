@@ -217,3 +217,7 @@ EOF
 ## References
 
 - `references/routing-policy.md` — provider priority, env keys, repo-context policy, v3 contract rules.
+
+## Managed execution
+
+`managed_process.py` is an internal helper used by app and async executors to bound and cancel router process groups; it is not a separate provider entrypoint.

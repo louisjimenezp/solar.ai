@@ -267,6 +267,7 @@ def dashboard_html() -> str:
 </head>
 <body>
   <h1>Solar Host</h1>
+  <p><a href="/app">Open Solar App</a></p>
   <p class="muted">Control plane — active workspace <code>{_esc(ws)}</code></p>
   <p>Host: <span class="ok">OK</span> <span class="muted">({_esc(host_url)} — this page)</span></p>
   <section>
@@ -306,13 +307,6 @@ def dashboard_html() -> str:
   <section>
     <h2>Async monitor</h2>
     <ul>{jobs_html}</ul>
-  </section>
-  <section>
-    <h2>Scoped chat</h2>
-    <p class="muted">Context: active workspace agent (not generalist chat).</p>
-    <textarea id="chatIn" rows="3" placeholder="Ask about this workspace..."></textarea>
-    <button type="button" id="btnChat">Send</button>
-    <pre id="chatOut"></pre>
   </section>
   <section>
     <h2>Governance editor</h2>
@@ -375,25 +369,7 @@ def dashboard_html() -> str:
     document.querySelectorAll(".client-act").forEach((btn) => {{
       btn.addEventListener("click", () => runClientAction(btn.dataset.action));
     }});
-    document.getElementById("btnChat").onclick = async () => {{
-      const msg = document.getElementById("chatIn").value;
-      const out = document.getElementById("chatOut");
-      out.textContent = "…";
-      try {{
-        const r = await postJson("/api/chat", {{ message: msg }});
-        const raw = await r.text();
-        try {{
-          const data = JSON.parse(raw);
-          const reply = data.reply_text || data.error || raw;
-          out.textContent = reply;
-          if (!r.ok) out.textContent = (data.error || raw) + " (HTTP " + r.status + ")";
-        }} catch (_) {{
-          out.textContent = raw;
-        }}
-      }} catch (e) {{
-        out.textContent = String(e);
-      }}
-    }};
+
     function setGovStatus(msg, isErr) {{
       const el = document.getElementById("govStatus");
       el.textContent = msg || "";
@@ -626,15 +602,33 @@ class HostHandler(BaseHTTPRequestHandler):
         raw = json.dumps(payload).encode("utf-8")
         self._send(raw, code, "application/json; charset=utf-8")
 
+    def _work_guard(self) -> bool:
+        if not client_actions.is_loopback_client(self) or not client_actions.validate_client_request(self, PORT):
+            self._send_json({"error": "forbidden Host/Origin"}, 403)
+            return False
+        return True
+
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
         qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
         ws = _active_workspace()
 
+        if path in ("/", "/app", "/app.js", "/app.css") or path.startswith("/api/app/"):
+            if not self._work_guard():
+                return
+            import app_http
+            try:
+                app_http.get(self, path, qs, _active_store())
+            except (KeyError, FileNotFoundError):
+                self._send_json({"error": "Not found"}, 404)
+            except (ValueError, TypeError) as exc:
+                self._send_json({"error": str(exc)}, 400)
+            return
+
         if _dispatch_interface_get(self, path):
             return
 
-        if path in ("/", "/dashboard"):
+        if path == "/dashboard":
             self._send(dashboard_html().encode("utf-8"))
             return
         if path == "/health":
@@ -722,6 +716,47 @@ class HostHandler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         ws = _active_workspace()
 
+        if path.startswith("/api/app/"):
+            if not self._work_guard():
+                return
+            import app_http
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 16384 or self.headers.get_content_type() != "application/json":
+                    raise ValueError("Expected bounded JSON request")
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict):
+                    raise ValueError("Expected JSON object")
+                app_http.post(self, path, body, _active_store())
+            except (KeyError, FileNotFoundError):
+                self._send_json({"error": "Not found"}, 404)
+            except (ValueError, TypeError) as exc:
+                self._send_json({"error": str(exc)}, 400)
+            return
+
+        if path == "/api/voice/turn":
+            if not self._work_guard():
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > 16384 or self.headers.get_content_type() != "application/json":
+                    raise ValueError("Expected bounded JSON request")
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict):
+                    raise ValueError("Expected JSON object")
+                if body.get("workspace") != str(ws):
+                    self._send_json({"error": "Workspace changed"}, 409)
+                    return
+                store = _active_store()
+                from voice_work import turn
+                result = turn(store, body.get("text"), body.get("request_id"), body.get("thread_id"))
+                self._send_json(result)
+            except KeyError:
+                self._send_json({"error": "Run not found"}, 404)
+            except (ValueError, TypeError) as exc:
+                self._send_json({"error": str(exc)}, 400)
+            return
+
         if _dispatch_interface_post(self, path):
             return
 
@@ -772,40 +807,9 @@ class HostHandler(BaseHTTPRequestHandler):
             self._send_json(payload, code)
             return
         if path == "/api/chat":
-            msg = str(body.get("message", "")).strip()
-            if not msg:
-                self._send_json({"error": "empty message"}, HTTPStatus.BAD_REQUEST)
-                return
-            scoped = (
-                f"[Solar Host scoped chat — workspace {ws}]\n"
-                f"Use only context from sun/, planets/, skills. User question:\n{msg}"
-            )
-            store = _active_store()
-            thread = store.create_thread(title="Host scoped")
-            run_record, router_response = store.run_thread_message(
-                thread_id=thread["thread_id"],
-                text=scoped,
-                mode="ask",
-            )
-            if run_record.get("status") != "succeeded":
-                host_events.emit(
-                    "run.failed",
-                    {
-                        "summary": str(run_record.get("error") or run_record.get("status") or "chat run failed"),
-                        "run_id": run_record.get("run_id"),
-                    },
-                    workspace=str(ws),
-                )
-            status = HTTPStatus.OK if run_record.get("status") == "succeeded" else HTTPStatus.BAD_GATEWAY
-            body_out: dict[str, object] = {
-                "run": run_record,
-                "reply_text": router_response.get("reply_text", ""),
-                "router": router_response,
-            }
-            if status != HTTPStatus.OK:
-                body_out["error"] = router_response.get("error") or "router failed — check solar router doctor"
-            self._send_json(body_out, status)
+            self._send_json({"error":"Legacy scoped chat is retired; use /app conversations"},410)
             return
+
         if len(parts) == 4 and parts[0] == "api" and parts[1] == "approvals" and parts[3] in ("approve", "reject"):
             aid = parts[2]
             if not _valid_approval_id(aid):
@@ -872,6 +876,33 @@ def main() -> int:
                 pass
 
     threading.Thread(target=_health_poller, daemon=True, name="host-health").start()
+
+    def _app_reconciler():
+        canonical_worker = None
+        import app_conversations
+        import app_artifacts
+        while True:
+            try:
+                store = _active_store()
+                app_conversations.tick(store)
+                # Reuse the canonical worker entrypoint only when solar-system does not own it.
+                supervised = 'async-tasks' in re.split(r'[,\s]+', os.getenv('SOLAR_SYSTEM_FEATURES',''))
+                queued = store.get_row("SELECT r.run_id FROM runs r JOIN app_work_links l ON l.run_id=r.run_id WHERE r.status='queued' LIMIT 1")
+                if queued and not supervised and (canonical_worker is None or canonical_worker.poll() is not None):
+                    from voice_work import task_root
+                    environment = {**os.environ, 'SOLAR_TASK_ROOT':str(task_root(store)),
+                                   'SOLAR_AI_ROUTER_PYTHON':sys.executable,
+                                   'PATH':str(Path(sys.executable).parent)+os.pathsep+os.getenv('PATH','')}
+                    with (store.runtime_dir/'canonical-worker.log').open('a') as log:
+                        canonical_worker = subprocess.Popen(['bash',str(_skill_script('solar-async-tasks','ensure_async_tasks.sh'))],
+                            cwd=store.workspace,env=environment,stdout=log,stderr=subprocess.STDOUT)
+                app_artifacts.scan(store)
+            except Exception as exc:
+                print(f"Solar App reconciliation: {exc}", file=sys.stderr)
+            time.sleep(0.5)
+
+    threading.Thread(target=_app_reconciler, daemon=True, name="host-app-reconciliation").start()
+
 
     server = ThreadingHTTPServer((HOST, PORT), HostHandler)
     print(f"Solar Host listening on http://{HOST}:{PORT} (workspace={ws})")

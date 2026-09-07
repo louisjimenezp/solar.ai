@@ -1,12 +1,12 @@
 ---
 name: solar-app
 description: >
-  Solar App local control plane on :9000 — dashboard, fleet, governance editor, voice (tray + CLI via solar app voice).
+  Solar App conversations, work results, artifact inspection and local dictation on :9000/app; fleet administration on /dashboard.
 ---
 
 # Solar App (`solar-app`)
 
-Preferred human entrypoint for local operations UI/API on `:9000`.
+Canonical human entrypoint: `http://localhost:9000/app`.
 
 ## Required MCP
 
@@ -17,7 +17,7 @@ None
 ```bash
 solar app start|stop|status|open
 solar app workspace list|add|remove|use <path>
-solar app voice once|paste|command|read|ask|doctor   # ops/debug; primary UX = Solar.app tray
+solar app voice once|paste|command|read|ask|doctor   # ops/debug; primary UX = /app
 ```
 
 Global dispatcher: `core/skills/solar-client/scripts/solar` (`solar client *`, `solar status`, chat REPL).
@@ -43,3 +43,10 @@ python3 -m py_compile core/skills/solar-app/scripts/host_server.py
 python3 -m py_compile core/skills/solar-app/scripts/interface_http.py
 bash -n core/skills/solar-client/scripts/solar
 ```
+
+## Voice work
+
+`SOLAR_VOICE_OS_ENABLED=1` enables the canonical conversation-to-work path in `/app`.
+Configure the accepted light conductor with environment variables; no model picker or hardcoded fallback.
+See [voice work](references/voice-work.md) for API, rollout and validation.
+Run `python3 core/skills/solar-app/scripts/benchmark_voice.py --samples 30` to measure the local conductor.

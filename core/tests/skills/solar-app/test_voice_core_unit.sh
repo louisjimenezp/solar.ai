@@ -26,6 +26,7 @@ export SOLAR_VOICE_MOCK_STREAM_FIXTURE="$SCRIPT_DIR/fixtures/voice_mock_stream.s
 python3 - <<'PY' "$SCRIPTS" || exit 1
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, sys.argv[1])
 import voice_core as vc
@@ -60,6 +61,20 @@ for line, want_type in sse_cases:
 chunks = list(vc.stream_ask("mock", "thread_x"))
 assert any(c.get("type") == "chunk" for c in chunks), chunks
 assert any(c.get("type") == "done" for c in chunks), chunks
+
+assert vc.detect_text_language("Prepara un resumen de los gastos") == "es"
+assert vc.detect_text_language("Please prepare a summary of the expenses") == "en"
+assert vc.detect_text_language("Prépare un résumé des dépenses") == "fr"
+vc._say_voices = [("Mónica", "es_ES"), ("Daniel", "en_GB"), ("Thomas", "fr_FR")]
+assert vc.tts_voice_for_text("¿Puedes leer este resultado?") == "Mónica"
+assert vc.tts_voice_for_text("Please read this result") == "Daniel"
+with patch.object(vc.shutil, "which", return_value="/usr/bin/say"), \
+     patch.object(vc.subprocess, "Popen") as popen:
+    process = popen.return_value
+    process.poll.return_value = 0
+    vc.speak_brief("Please read this result")
+    popen.assert_called_once_with(["say", "-v", "Daniel", "Please read this result"])
+    process.wait.assert_called_once()
 print("OK: voice_core unit")
 PY
 assert_ok "voice_core unit inline" test $? -eq 0

@@ -230,3 +230,9 @@ After any `core/skills/` change, run:
 ```bash
 solar client sync
 ```
+
+## Cancellation
+
+Request cancellation with `python3 core/skills/solar-async-tasks/scripts/task_cancel.py <task-root> <task-id>`.
+The executor confirms `cancelled` only after process-group termination and cleanup.
+Voice OS D9 may queue explicit, bounded local preparation through the Host; the original request supplies authority, not the acknowledgement.

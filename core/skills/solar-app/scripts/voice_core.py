@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import uuid
+import threading
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -389,20 +392,7 @@ class VoiceHostClient:
         return False
 
     def chat(self, text: str) -> Tuple[int, str]:
-        code, raw = self._request(
-            "/api/chat",
-            method="POST",
-            body={"message": text},
-            timeout=120,
-        )
-        if code != 200:
-            return code or 1, raw or f"Host chat failed ({code})"
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return 1, raw
-        reply = data.get("reply_text") if isinstance(data, dict) else ""
-        return 0, str(reply or "(empty response)")
+        return 1, "El chat antiguo está retirado. Abre Solar App en /app."
 
     def create_thread(self, title: str = "voice") -> Optional[str]:
         code, raw = self._request(
@@ -599,14 +589,109 @@ def stream_ask(
         resp.close()
 
 
+_speech_lock = threading.Lock()
+_speech_process = None
+_say_voices = None
+
+_LANGUAGE_WORDS = {
+    "es": {"de", "el", "en", "es", "la", "las", "los", "para", "por", "que", "una", "y"},
+    "en": {"a", "and", "for", "in", "is", "of", "that", "the", "this", "to", "with"},
+    "fr": {"avec", "dans", "de", "des", "est", "et", "la", "le", "les", "pour", "que", "une"},
+    "de": {"das", "der", "die", "ein", "eine", "für", "ist", "mit", "und", "von", "zu"},
+    "it": {"che", "con", "di", "e", "il", "in", "la", "per", "una"},
+    "pt": {"com", "de", "do", "e", "em", "é", "o", "os", "para", "que", "uma"},
+    "ca": {"amb", "aquest", "aquesta", "de", "el", "els", "és", "i", "la", "les", "per", "que"},
+}
+_PREFERRED_LOCALES = {
+    "es": ("es_ES", "es_MX"), "en": ("en_GB", "en_US"),
+    "fr": ("fr_FR", "fr_CA"), "de": ("de_DE",), "it": ("it_IT",),
+    "pt": ("pt_PT", "pt_BR"), "ca": ("ca_ES",),
+}
+_PREFERRED_VOICES = {
+    "es": ("Mónica", "Monica"), "en": ("Daniel", "Samantha"),
+    "fr": ("Thomas", "Amélie"), "de": ("Anna",), "it": ("Alice",),
+    "pt": ("Joana",), "ca": ("Montserrat",), "ja": ("Kyoko",),
+    "zh": ("Tingting",), "ko": ("Yuna",),
+}
+
+
+def detect_text_language(text: str) -> str:
+    """Return a small local language hint for TTS; no network or model call."""
+    value = text.casefold()
+    if re.search(r"[\u3040-\u30ff]", value):
+        return "ja"
+    if re.search(r"[\u4e00-\u9fff]", value):
+        return "zh"
+    if re.search(r"[\uac00-\ud7af]", value):
+        return "ko"
+    tokens = re.findall(r"[^\W\d_]+", value, flags=re.UNICODE)
+    scores = {lang: sum(token in words for token in tokens) for lang, words in _LANGUAGE_WORDS.items()}
+    if re.search(r"[ñ¿¡]", value):
+        scores["es"] += 3
+    if re.search(r"[ãõ]", value):
+        scores["pt"] += 3
+    if "·" in value or re.search(r"\b(l·l|això|també)\b", value):
+        scores["ca"] += 3
+    best = max(scores, key=scores.get)
+    if scores[best]:
+        return best
+    return os.environ.get("SOLAR_VOICE_TTS_DEFAULT_LANGUAGE", "es").strip().lower() or "es"
+
+
+def _installed_say_voices():
+    global _say_voices
+    if _say_voices is not None:
+        return _say_voices
+    voices = []
+    try:
+        proc = subprocess.run(["say", "-v", "?"], capture_output=True, text=True, timeout=3, check=False)
+        for line in proc.stdout.splitlines():
+            match = re.match(r"^(.+?)\s+([a-z]{2}(?:_[A-Z]{2})?)\s+#", line)
+            if match:
+                voices.append((match.group(1).strip(), match.group(2)))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    _say_voices = voices
+    return voices
+
+
+def tts_voice_for_text(text: str):
+    language = detect_text_language(text)
+    configured = os.environ.get(f"SOLAR_VOICE_TTS_VOICE_{language.upper()}", "").strip()
+    if configured:
+        return configured
+    voices = _installed_say_voices()
+    installed = {name for name, _ in voices}
+    for name in _PREFERRED_VOICES.get(language, ()):
+        if name in installed:
+            return name
+    for locale in _PREFERRED_LOCALES.get(language, ()):
+        for name, voice_locale in voices:
+            if voice_locale == locale:
+                return name
+    for name, voice_locale in voices:
+        if voice_locale.split("_", 1)[0] == language:
+            return name
+    return None
+
+
+def stop_speaking():
+    global _speech_process
+    with _speech_lock:
+        if _speech_process is not None and _speech_process.poll() is None:
+            _speech_process.terminate()
+        _speech_process = None
+
+
 def speak_brief(text: str, *, max_chars: int = 400) -> None:
+    global _speech_process
     if os.environ.get("SOLAR_VOICE_TTS", "").strip().lower() in ("0", "off", "no"):
         return
     snippet = cleanup_text(text)[:max_chars]
     if not snippet:
         return
     mode = os.environ.get("SOLAR_VOICE_TTS", "batch").strip().lower()
-    if mode == "stream" and sys.platform == "darwin":
+    if mode == "stream" and sys.platform == "darwin" and os.environ.get("SOLAR_VOICE_OS_ENABLED", "0") != "1":
         try:
             from host_platform.macos.voice_tts import speak_batch_fallback  # noqa: PLC0415
 
@@ -615,7 +700,13 @@ def speak_brief(text: str, *, max_chars: int = 400) -> None:
         except Exception:  # noqa: BLE001
             pass
     if shutil.which("say"):
-        subprocess.run(["say", snippet], check=False)
+        stop_speaking()
+        with _speech_lock:
+            voice = tts_voice_for_text(snippet)
+            argv = ["say", "-v", voice, snippet] if voice else ["say", snippet]
+            proc = subprocess.Popen(argv)
+            _speech_process = proc
+        proc.wait()
 
 
 def run_intent(
@@ -629,6 +720,27 @@ def run_intent(
     ok, hint = host.ensure_host()
     if not ok:
         return 1, hint
+
+    if os.environ.get("SOLAR_VOICE_OS_ENABLED", "0").lower() in ("1", "true"):
+        session = load_session(active_workspace())
+        code, raw = host._request("/api/voice/turn", method="POST", body={
+            "text": utterance, "request_id": uuid.uuid4().hex,
+            "thread_id": session.get("thread_id"), "workspace": active_workspace(),
+        }, timeout=8)
+        if code != 200:
+            return 1, "No pude confirmar el encargo. Comprueba Solar antes de repetirlo."
+        try:
+            result = json.loads(raw)
+        except ValueError:
+            return 1, "Respuesta de voz inválida. Comprueba Solar."
+        if result.get("thread_id"):
+            save_session({"thread_id": result["thread_id"]}, active_workspace())
+        if result.get("status") == "open" and result.get("url", "").startswith("/app?thread=") and shutil.which("open"):
+            subprocess.run(["open", host.base + result["url"]], check=False)
+        reply = str(result.get("reply", ""))
+        if speak and reply:
+            speak_brief(reply)
+        return 0, reply
 
     intent = parse_intent(utterance)
     if intent == "status":
@@ -668,6 +780,8 @@ def run_intent(
                 speak_brief(reply)
             return 0, reply
 
+    if thread_id:
+        return 1, "La conexión con el hilo se interrumpió. Comprueba el resultado en Solar antes de repetir el encargo."
     code, reply = host.chat(utterance)
     if code != 0:
         if stream_err:

@@ -6,6 +6,19 @@ The format is based on Keep a Changelog.
 
 ## [Unreleased]
 
+### Added
+- feat(solar-app): add the canonical `/app` experience with conversations, linked work activity, system status/logs, planet artifact previews, and local dictation that fills the composer for review.
+- feat(solar-app): link local preparation requests to the canonical `solar-async-tasks` lifecycle and project run state, bounded logs, and `output.md` results into SQLite.
+
+### Changed
+- change(solar-app): use one configurable lightweight conductor without UI model selectors or hardcoded model fallback; reject Gemma 8B (`solar`) and `qwen3.5:0.8b` for this role.
+- change(solar-app): make `/app` the only product interface, keep `/dashboard` for fleet administration, and retire `/work` and the scoped dashboard chat.
+- change(solar-app): make the `Escuchar` action detect message language locally and select an installed matching macOS voice, with locale and system-voice fallbacks.
+
+### Fixed
+- fix(solar-app): route stop requests through canonical async-task cancellation and report `cancelled` only after the managed process acknowledges termination.
+- fix(solar-app): return HTTP 410 from legacy `/api/chat` instead of creating a disposable thread outside the active conversation.
+
 ## [0.22.1] - 2026-09-06
 
 ### Fixed

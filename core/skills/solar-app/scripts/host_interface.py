@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -16,6 +17,7 @@ import host_registry as reg  # noqa: E402
 import host_workspace_context as ctx  # noqa: E402
 
 _cache: dict[str, InterfaceStore] = {}
+_cache_lock = threading.RLock()
 
 
 def _workspace_path(workspace: str | None = None) -> str:
@@ -34,12 +36,14 @@ def _bind_event_hook(store: InterfaceStore, workspace: str) -> None:
 
 def get_store(workspace: str | None = None) -> InterfaceStore:
     norm = _workspace_path(workspace)
-    if norm not in _cache:
-        store = InterfaceStore(norm)
-        store.ensure_runtime()
-        _bind_event_hook(store, norm)
-        _cache[norm] = store
-    return _cache[norm]
+    with _cache_lock:
+        if norm not in _cache:
+            store = InterfaceStore(norm)
+            store.ensure_runtime()
+            _bind_event_hook(store, norm)
+            _cache[norm] = store
+        return _cache[norm]
+
 
 
 def invalidate_store(workspace: str | None = None) -> None:

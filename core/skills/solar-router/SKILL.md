@@ -3,7 +3,7 @@ name: solar-router
 description: >
   Shared router that runs AI providers (Codex, Claude, Agy/Antigravity, Agent, Ollama) with Solar repo context.
   Single source of truth for provider selection, fallback, and async routing policy.
-  Use when solar-gateway, async-tasks, or other runtimes need to invoke an AI with
+  Use when solar-gateway, solar-app (channel=app), async-tasks, or other runtimes need to invoke an AI with
   cwd = SOLAR_WORKSPACE and paths resolved against the active workspace.
 ---
 
@@ -32,7 +32,7 @@ For that work, create or propose a task through `solar-async-tasks`. When `solar
 - Also inject cross-channel canonical intention from `sun/runtime/continuity/active.json` when present. See `references/continuity.md`.
 - Own the A3 mandate controller (`scripts/delegation_ctl.py`) for `sun/delegations/`: any caller gates mutating routines through `check` and fails closed. See `references/a3-mandates.md`. Unrelated to JIT agent/skill delegation.
 - Answer "where are we" on demand with `scripts/work_status.sh` (intention, machine queue, today's blockers, mandates). Read-only, no cadence: periodic briefings are recurring async tasks. Behaviour layer in `references/signal-orchestration.md`.
-- Implement `DecisionEngine`: decide `decision.kind` based on `mode`, `channel`, and AI semantic output. On telegram/n8n, `async_draft_created` queues work + `notify_when: completed` and returns a short ACK.
+- Implement `DecisionEngine`: decide `decision.kind` based on `mode`, `channel`, and AI semantic output. On telegram/n8n/app, `async_draft_created` queues work + `notify_when: completed` and returns a short ACK.
 - Resolve JIT context from `metadata`: lookup agent/skills in planet → fallback to core → generate role inline if not found.
 - Write audit log (`sun/runtime/router/audit.jsonl`) with `start`/`end` events per execution for traceability (including failed early-exit paths).
 

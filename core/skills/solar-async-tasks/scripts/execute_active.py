@@ -322,7 +322,7 @@ def main() -> int:
 
     task_provider = read_frontmatter_key(task_file, "provider").strip().lower() or None
     executor = read_frontmatter_key(task_file, "executor").strip().lower()
-    if read_frontmatter_key(task_file, "origin_channel") == "voice":
+    if read_frontmatter_key(task_file, "origin_channel") in ("app", "voice"):
         # Phase 1 preparation worker: read context, return text. No write/shell/MCP tools.
         task_provider = "claude"
         os.environ["SOLAR_ROUTER_CLAUDE_CMD"] = shlex.join([

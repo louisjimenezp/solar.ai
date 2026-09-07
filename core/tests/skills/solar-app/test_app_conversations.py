@@ -76,15 +76,13 @@ class AppTests(unittest.TestCase):
         run=self.store.get_run(a['run_id'])
         self.assertTrue((voice_work.task_root(self.store)/'cancellation'/(run['task_id']+'.json')).exists())
 
-    def test_model_context_is_bounded_and_has_no_other_conversation(self):
-        other=chats.create(self.store)['id']; chats.add_message(self.store,other,'user','private other chat')
-        for i in range(20): chats.add_message(self.store,self.cid,'user','x'*3000)
-        with patch('app_conversations.chat',return_value='Ready') as request:
-            self.assertEqual(chats.answer(self.store,self.cid,'last'),'Ready')
-        data={'messages':request.call_args.args[0]}
-        self.assertEqual(len(data['messages']),9)
-        self.assertNotIn('private other chat',json.dumps(data))
-        self.assertTrue(all(len(m['content'])<=1200 for m in data['messages'][1:]))
+    def test_talk_uses_solar_router_not_a_private_conductor(self):
+        with patch('app_conversations.app_solar.ask',return_value='Listo') as ask:
+            self.assertEqual(chats.answer(self.store,self.cid,'hola','talk1'),'Listo')
+        ask.assert_called_once()
+        self.assertEqual(ask.call_args.args[1],self.cid)
+        self.assertEqual(ask.call_args.args[2],'hola')
+        self.assertEqual(ask.call_args.args[3],'talk1')
 
     def test_file_changes_and_path_boundaries(self):
         folder=self.ws/'planets/demo';folder.mkdir(parents=True);f=folder/'note.md';f.write_text('initial')

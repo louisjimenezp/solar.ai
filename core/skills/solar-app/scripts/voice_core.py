@@ -9,6 +9,8 @@ import os
 import re
 import shutil
 import signal
+import shlex
+import tempfile
 import subprocess
 import sys
 import time
@@ -117,6 +119,65 @@ def _stop_rec(proc: subprocess.Popen[bytes]) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=2)
+
+
+def reap_orphan_recorders() -> int:
+    """Stop only current-user Solar captures reparented to launchd/init.
+
+    A live parent owns its recording, including captures in another Solar UI.
+    Unknown process identity or paths are deliberately left alone.
+    """
+    try:
+        out = subprocess.check_output(
+            ["pgrep", "-fl", "rec"],
+            text=True,
+            errors="replace",
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return 0
+    killed = 0
+    for line in out.splitlines():
+        if "solar-audio-" not in line and "capture_" not in line:
+            continue
+        if "/rec" not in line and " rec " not in f" {line} ":
+            continue
+        pid_s = line.split(None, 1)[0]
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            continue
+        if pid == os.getpid():
+            continue
+        try:
+            identity = subprocess.check_output(
+                ['ps', '-p', str(pid), '-o', 'uid=,ppid=,comm=,args='],
+                text=True, errors='replace', timeout=2,
+            ).strip().split(None, 3)
+            if len(identity) != 4:
+                continue
+            uid, parent, executable, command = identity
+            if int(uid) != os.getuid() or int(parent) != 1 or Path(executable).name != 'rec':
+                continue
+            arguments = shlex.split(command)
+            owned = False
+            capture_dir = (Path(active_workspace()) / 'sun/runtime/host/voice').resolve()
+            for argument in arguments[1:]:
+                path = Path(argument)
+                if not path.is_absolute():
+                    continue
+                resolved = path.resolve()
+                if (resolved.parent in {Path('/tmp').resolve(), Path(tempfile.gettempdir()).resolve()}
+                        and re.fullmatch(r'solar-audio-[0-9a-f]+\.wav', path.name)):
+                    owned = True
+                if resolved.parent == capture_dir and re.fullmatch(r'capture_[\w.-]+\.wav', path.name):
+                    owned = True
+            if not owned:
+                continue
+            os.kill(pid, signal.SIGTERM)
+            killed += 1
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    return killed
 
 
 def _resolve_rec() -> Optional[str]:

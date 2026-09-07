@@ -26,7 +26,7 @@ Global dispatcher: `core/skills/solar-client/scripts/solar` (`solar client *`, `
 
 - Runtime scripts: `core/skills/solar-app/scripts/`
 - Shared runtime modules: `interface_http.py`, `interface_store.py` (in-process on `:9000`)
-- Voice: `voice_*.py`, macOS tray under `host_platform/macos/`
+- Voice: `voice_*.py`, macOS tray under `host_platform/macos/` (Voice HUD, app windows for `/app` and `/dashboard`)
 - `solar-interface` skill **removed** — legacy `:7741` daemon sunset
 
 ## Validation commands
@@ -47,6 +47,5 @@ bash -n core/skills/solar-client/scripts/solar
 ## Voice work
 
 `SOLAR_VOICE_OS_ENABLED=1` enables the canonical conversation-to-work path in `/app`.
-Configure the accepted light conductor with environment variables; no model picker or hardcoded fallback.
+Talk uses solar-router (`channel=app`, `mode=auto`); no private conductor or model picker.
 See [voice work](references/voice-work.md) for API, rollout and validation.
-Run `python3 core/skills/solar-app/scripts/benchmark_voice.py --samples 30` to measure the local conductor.

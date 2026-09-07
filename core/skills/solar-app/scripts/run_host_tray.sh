@@ -27,5 +27,13 @@ if ! "$PY" -c "import Quartz" 2>/dev/null; then
   echo "Installing PyObjC Quartz into voice-uv venv…" >&2
   uv pip install --python "$PY" pyobjc-framework-Quartz
 fi
+if ! "$PY" -c "import AppKit, WebKit" 2>/dev/null; then
+  echo "Installing PyObjC Cocoa/WebKit into voice-uv venv…" >&2
+  uv pip install --python "$PY" pyobjc-framework-Cocoa pyobjc-framework-WebKit
+fi
+if ! "$PY" -c "import AVFoundation" 2>/dev/null; then
+  echo "Installing PyObjC AVFoundation into voice-uv venv…" >&2
+  uv pip install --python "$PY" pyobjc-framework-AVFoundation
+fi
 
 exec "$PY" "$SCRIPT_DIR/host_tray.py"

@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def host_url() -> str:
@@ -15,31 +16,96 @@ def host_url() -> str:
     return f"http://{host}:{port}"
 
 
-def get_json(path: str, *, timeout: float = 4) -> Optional[Dict[str, Any]]:
+def request_json(
+    method: str,
+    path: str,
+    body: Optional[Dict[str, Any]] = None,
+    *,
+    timeout: float = 8,
+) -> Tuple[int, Optional[Dict[str, Any]]]:
     url = f"{host_url()}{path}"
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            raw = resp.read().decode()
-            data = json.loads(raw)
-            return data if isinstance(data, dict) else None
-    except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError):
-        return None
-
-
-def post_json(path: str, body: Optional[Dict[str, Any]] = None, *, timeout: float = 8) -> bool:
-    url = f"{host_url()}{path}"
-    payload = json.dumps(body or {}).encode("utf-8")
+    data = None if body is None else json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         url,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+        data=data,
+        headers={"Content-Type": "application/json"} if data is not None else {},
+        method=method,
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return 200 <= resp.status < 300
-    except (urllib.error.URLError, OSError, TimeoutError):
-        return False
+            raw = resp.read().decode()
+            parsed = json.loads(raw) if raw else {}
+            payload = parsed if isinstance(parsed, dict) else None
+            return int(resp.status), payload
+    except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read().decode()
+            parsed = json.loads(raw) if raw else {}
+            payload = parsed if isinstance(parsed, dict) else None
+        except (json.JSONDecodeError, OSError):
+            payload = None
+        return int(exc.code), payload
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError):
+        return 0, None
+
+
+def get_json(path: str, *, timeout: float = 4) -> Optional[Dict[str, Any]]:
+    status, data = request_json("GET", path, timeout=timeout)
+    return data if status == 200 else None
+
+
+def post_json(path: str, body: Optional[Dict[str, Any]] = None, *, timeout: float = 8) -> bool:
+    status, _ = request_json("POST", path, body, timeout=timeout)
+    return 200 <= status < 300
+
+
+def last_assistant_text(detail: Optional[Dict[str, Any]]) -> str:
+    if not detail:
+        return ""
+    messages = detail.get("messages") or []
+    if not isinstance(messages, list):
+        return ""
+    for message in reversed(messages):
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            text = str(message.get("text") or "").strip()
+            if text:
+                return text
+    return ""
+
+
+def transcript_ok(text: str) -> bool:
+    cleaned = (text or "").strip()
+    return bool(cleaned) and not cleaned.startswith("[voice]")
+
+
+def app_bootstrap() -> Optional[Dict[str, Any]]:
+    return get_json("/api/app/bootstrap")
+
+
+def app_ensure_conversation(workspace: str, conversation_id: Optional[str] = None) -> Optional[str]:
+    if conversation_id:
+        quoted = urllib.parse.quote(workspace, safe="")
+        status, _ = request_json(
+            "GET",
+            f"/api/app/conversations/{conversation_id}?workspace={quoted}",
+            timeout=4,
+        )
+        if status == 200:
+            return conversation_id
+    status, data = request_json("POST", "/api/app/conversations", {"workspace": workspace}, timeout=8)
+    if status == 200 and data and data.get("id"):
+        return str(data["id"])
+    return None
+
+
+def app_send_turn(workspace: str, conversation_id: str, text: str, request_id: str) -> Optional[Dict[str, Any]]:
+    status, data = request_json(
+        "POST",
+        f"/api/app/conversations/{conversation_id}/messages",
+        {"workspace": workspace, "text": text, "request_id": request_id},
+        timeout=95,
+    )
+    return data if status == 200 else None
 
 
 def pending_approval_count() -> int:

@@ -1,4 +1,5 @@
 """Local microphone capture with explicit state, bounded duration and local STT."""
+import atexit
 import subprocess
 import tempfile
 import threading
@@ -10,6 +11,23 @@ import voice_config as config
 
 _lock = threading.RLock()
 _session = None
+
+
+def _atexit_stop() -> None:
+    with _lock:
+        s = _session
+        if not s or s.get('state') not in ('recording', 'transcribing'):
+            return
+        proc = s.get('proc')
+        path = s.get('path')
+        s['state'] = 'discarded'
+    if proc is not None:
+        vc._stop_rec(proc)
+    if path is not None:
+        path.unlink(missing_ok=True)
+
+
+atexit.register(_atexit_stop)
 
 
 def status(workspace):
@@ -27,6 +45,7 @@ def start(workspace, conversation):
         ok, hint = vc.check_voice_deps(require_whisper=True)
         if not ok:
             raise ValueError(hint)
+        vc.reap_orphan_recorders()
         sid = uuid.uuid4().hex
         path = Path(tempfile.gettempdir()) / ('solar-audio-'+sid+'.wav')
         config.prepare_capture(path)

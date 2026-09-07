@@ -134,7 +134,7 @@ def _enqueue(store, text, decision, request_id, context=""):
     (run_dir / 'authority.json').write_text(json.dumps(authority, ensure_ascii=False))
     meta = {'id': task_id, 'title': decision['title'] or text[:60], 'status': 'queued',
             'created': now_iso(), 'priority': 'normal', 'scheduled_time': 'now', 'recurring': False,
-            'provider': provider, 'origin_thread_id': thread_id, 'origin_run_id': run_id, 'origin_channel': 'voice'}
+            'provider': provider, 'origin_thread_id': thread_id, 'origin_run_id': run_id, 'origin_channel': 'app'}
     body = ('Prepare a local result for the original user request below. The user authorized local '
             'preparation only. No sends, purchases, deletion, credentials, commit/push or subtasks. '
             'If the request needs those effects, explain what needs approval instead. '

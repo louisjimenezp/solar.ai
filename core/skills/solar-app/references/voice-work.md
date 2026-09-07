@@ -3,8 +3,9 @@
 `/app` is the user interface. `/` redirects there. Conversations, activity,
 artifact previews, status and logs are views within it. `/dashboard` is fleet
 administration only; scoped chat is removed and `/api/chat` returns HTTP 410.
-The tray opens `/app`; dictation fills its input for review and explicit send.
-There is no automatic paste, automatic voice send, separate work page or model picker.
+The macOS menu bar Voice item records locally, sends the transcript to the
+conversation API, and speaks the reply in a HUD. Solar and Dashboard open those
+URLs in an app window. There is no automatic paste, separate work page or model picker.
 
 ## Runtime and storage
 
@@ -31,22 +32,19 @@ it was applied during the discarded prototype; 005 removes its model settings an
 private task-root column and adds canonical SQLite projections. Do not renumber
 applied migrations. No old prototype files are executed or migrated into a second queue.
 
-## Conductor and authority
+## Solar and authority
 
 Enable `SOLAR_VOICE_OS_ENABLED=1` only for the accepted matching runtime.
-Configure `SOLAR_VOICE_CONDUCTOR_MODEL` operationally, not in the UI. There is no
-hardcoded model fallback. `solar`/Gemma 8B and `qwen3.5:0.8b` are rejected.
-`SOLAR_VOICE_CONDUCTOR_ADAPTER=ollama|openai` selects the light transport;
-`SOLAR_VOICE_CONDUCTOR_ENDPOINT` and optional `SOLAR_VOICE_CONDUCTOR_API_KEY`
-configure it. Ollama defaults to loopback; remote use requires explicit configuration.
-The adapter has no tools, a four-second timeout and a bounded output/context budget.
+Talk (typed or spoken) enters `POST /api/app/conversations/<id>/messages`.
+That door calls solar-router with `channel=app` and `mode=auto`, the same
+contract as n8n. There is no private conductor and no `SOLAR_VOICE_CONDUCTOR_*`.
+Mac STT/TTS stay local; Solar answers the text.
 
-Explicit local preparation gets an immediate companion acknowledgement from the
-runtime without a model round trip or second approval. The original message is the
-authority; an acknowledgement cannot authorize external actions. External effects
-are not queued and require formal approval. The fixed capable worker remains
-Claude via solar-router with Read/Glob/Grep only, MCP and hooks disabled. Dynamic
-routing, extra worker providers and barge-in are outside this cut.
+Explicit local preparation still gets an immediate companion acknowledgement
+without a second approval; `tick()` publishes that intent into `solar-async-tasks`.
+If the router itself returns `async_draft_created`, the App links that `task_id`
+into the conversation expediente. The original message is the authority.
+External effects are not queued and require formal approval.
 
 ## API and verification
 
@@ -58,5 +56,5 @@ routing, extra worker providers and barge-in are outside this cut.
 
 Run the app, async-tasks and router suites under `core/tests/skills/`.
 `test_host_chat_e2e.sh` exercises the canonical HTTP contract in a temporary Host.
-Physical microphone quality and real conductor latency require separate acceptance;
+Physical microphone quality and real router latency require separate acceptance;
 fixture tests are not evidence of a deployed, accepted voice experience.

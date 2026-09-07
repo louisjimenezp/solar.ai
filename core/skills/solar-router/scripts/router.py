@@ -39,7 +39,7 @@ from solar_paths import resolve_solar_paths, resolve_under_home as _resolve_unde
 
 SUPPORTED_PROVIDERS = set(PROVIDERS.keys())
 VALID_MODES = {"auto", "direct_only", "async_only"}
-VALID_CHANNELS = {"telegram", "n8n", "async-task", "other"}
+VALID_CHANNELS = {"telegram", "n8n", "app", "async-task", "other"}
 
 SOLAR_WORKSPACE, SOLAR_ROOT = resolve_solar_paths()
 
@@ -323,7 +323,7 @@ def extract_tag_decision_kind(ai_output: str) -> Optional[str]:
     return m.group(1).lower()
 
 
-GATEWAY_ASYNC_CHANNELS = frozenset({"telegram", "n8n"})
+GATEWAY_ASYNC_CHANNELS = frozenset({"telegram", "n8n", "app"})
 GATEWAY_ASYNC_ACK = (
     "Me pongo con ello. Te aviso por aquí cuando termine."
 )
@@ -990,7 +990,7 @@ def build_prompt(
     lines.append("")
     mode_l = mode.strip().lower()
     channel_l = channel.strip().lower()
-    if mode_l == "auto" and channel_l in ("telegram", "n8n"):
+    if mode_l == "auto" and channel_l in ("telegram", "n8n", "app"):
         lines.append(
             f"[Solar routing] channel={channel_l}, mode=auto. "
             "If the request likely needs more than ~60 seconds (plans, audits, multi-file work, "

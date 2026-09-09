@@ -70,9 +70,30 @@ is the intended shape.
   Solar.
 
 Enforcement becomes real when credentials live in Solar's process rather than in
-the workspace. At that point a harness cannot send, publish or spend outside the
-gate, because it has nothing to do it with. The rule stops being obeyed and
-starts being unavoidable.
+the workspace. At that point a harness cannot send, publish or spend **through
+the routes Solar mediates** without passing the gate, because it has nothing to
+do it with. For those routes the rule stops being obeyed and starts being
+unavoidable.
+
+### Where the guarantee ends
+
+**Inside it:** anything that passes through Solar's runtime or its MCP server,
+using credentials the server holds.
+
+**Outside it:** anything that acts through an already-authenticated browser
+session, or with credentials Solar does not hold. Several skills in a typical
+workspace drive email, messaging and social platforms this way; what stops them
+from sending is a sentence in their own definition, not a mechanism.
+
+**The boundary is drawn by mechanism, not by authorship.** A skill shipped with
+Solar and a skill written by the user are equally outside the gate if they act
+through a session Solar does not mediate. This is stated so the guarantee can be
+verified rather than argued about.
+
+Isolating the user's browser is not the answer: the session is theirs, and the
+harness can open its own. The answer is to give Solar a real tool for the same
+verb — a gated send, with credentials in the server — so the browser route
+becomes unnecessary and the skill can be retired.
 
 ## The honesty rule
 
